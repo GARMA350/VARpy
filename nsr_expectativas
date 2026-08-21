@@ -1,0 +1,473 @@
+%% 1. PRELIMINARIES
+% -----------------------------------------------------------------------
+
+clear all;
+
+% Set LaTeX as the default interpreter for all figure text
+set(groot,'defaultTextInterpreter','latex')
+set(groot,'defaultAxesTickLabelInterpreter','latex')
+set(groot,'defaultLegendInterpreter','latex')
+
+% Helper for bold epsilon shock labels in figure text
+bfeps = @(s) ['${\bf \epsilon}_{t}^{\mathrm{' s '}}$'];
+
+
+%% 2. LOAD DATA
+% -----------------------------------------------------------------------
+
+raw = readcell('data2.xlsx', 'Sheet', 'Hoja1');
+
+
+%% 2.1 DATA MATRIX
+% -----------------------------------------------------------------------
+
+data = cellfun(@double, raw(3:end, 2:end));
+vnames = raw(1, 2:end);
+mnem   = raw(2, 2:end);
+nobs = size(data,1);
+nvar = length(mnem);
+
+
+%% 2.2 CREATE DATA STRUCTURE
+% -----------------------------------------------------------------------
+
+DATA = struct();
+for ii = 1:nvar
+    DATA.(mnem{ii}) = data(:,ii);
+end
+
+
+%% 2.3 OUTPUT GAP
+% -----------------------------------------------------------------------
+
+idx_igae = find(strcmpi(mnem,'igae'));
+if isempty(idx_igae)
+    error('No se encontró la variable IGAE en mnem.');
+end
+
+var_igae = data(:,idx_igae);
+[trend,cyclical] = hpfilter(var_igae,Smoothing=14400);
+
+DATA = rmfield(DATA,'igae');
+DATA.brecha_prod = cyclical;
+
+
+%% 2.4 CONSTRUCT X
+% -----------------------------------------------------------------------
+
+X = data;
+X(:,idx_igae) = cyclical;
+
+
+%% 2.5 UPDATE VARIABLE NAMES
+% -----------------------------------------------------------------------
+
+mnem{idx_igae} = 'brecha_prod';
+vnames{idx_igae} = 'Brecha del producto';
+nvar = length(mnem);
+
+
+%% 2.6 DATES
+% -----------------------------------------------------------------------
+
+dates = raw(3:end,1);
+firstdate_str = string(raw{3,1});
+year = str2double(extractBetween(firstdate_str,1,4));
+month = str2double(extractAfter(firstdate_str,'m'));
+firstdate = year + (month-1)/12;
+
+
+%% 3. PLOT SERIES
+% -----------------------------------------------------------------------
+
+figure;
+FigSize(24,18)
+
+for ii = 1:nvar
+    subplot(ceil(nvar/2),2,ii)
+    plot(DATA.(mnem{ii}), 'LineWidth',3, 'Color',pantone('Blue'));
+    title(vnames{ii}, 'FontWeight','bold', 'FontSize',14);
+    DatesPlot(firstdate,nobs,6,'m');
+    set(gca,'FontSize',12,'Layer','bottom');
+    grid on;
+    set(findobj(gca,'Type','line'),'Clipping','off');
+    SetAxesDual(gca);
+end
+
+
+
+
+%% 4. VAR ESTIMATION - IDENTIFICACION: SOLO SIGNO vs SIGNO + NARRATIVA
+% -----------------------------------------------------------------------
+% NOTA IMPORTANTE SOBRE TU CODIGO ORIGINAL:
+% Tenias "VARopt.R = SIGN" DESPUES de haber construido el struct R con
+% narr_sign y narr_dom. Eso sobreescribe por completo ese struct con solo
+% la matriz de signos, y las restricciones narrativas nunca se aplicaban.
+% Tambien faltaba VARopt.dates, necesario para que la rutina ubique los
+% episodios narrativos ('2004m11','2008m9','2012m9') en tu serie de tiempo.
+%
+% La solucion es correr VARmodel DOS VECES: una identificacion "solo
+% signo" (R = matriz) y otra "signo + narrativa" (R = struct con .sign,
+% .narr_sign, .narr_dom), y comparar ambas en la misma grafica.
+
+detc = 1;
+nlags = 12;
+
+SIGN = [ 1,  -1, -1,  0, 0;  % Brecha
+         1,   1,  0,  0, 0;  % Inflacion
+         1,   1,  1,  0, 0;  % Cetes 28
+         0,   0,  0,  0, 0;  % Expectativas
+         0,   0, -1,  0, 0]; % Tipo de cambio
+
+VARopt          = VARoption;
+VARopt.sr_hor    = 4;
+VARopt.nsteps    = 36;
+VARopt.mnem      = mnem;
+VARopt.vnames    = vnames;
+VARopt.figsize   = [24,18];
+VARopt.subplot   = [3,2];
+VARopt.dates     = dates;   % <-- necesario para narr_sign / narr_dom
+VARopt.ident     = 'sign';
+
+%% 4.1 Identificacion: solo restricciones de signo
+% -----------------------------------------------------------------------
+VARopt_sr        = VARopt;
+VARopt_sr.R      = SIGN;
+VARopt_sr.ndraws = 900;
+
+VAR_sr = VARmodel(X, nlags, detc, VARopt_sr);
+disp(['Tasa de aceptacion (solo signo): ' num2str(100*VAR_sr.accept_rate,'%.1f') '%'])
+
+%% 4.2 Identificacion: signo + narrativa
+% -----------------------------------------------------------------------
+clear R
+R.sign = SIGN;
+
+R.narr_sign.shock  = 2;
+R.narr_sign.period = {'2012m9'};
+R.narr_sign.sign   = 1;
+
+R.narr_dom.shock  = 2;
+R.narr_dom.period = {'2012m9'};
+R.narr_dom.var    = 2;
+
+VARopt_nsr         = VARopt;
+VARopt_nsr.R       = R;
+% Las restricciones narrativas suelen tener una tasa de aceptacion mucho
+% menor que las de solo signo, por lo que conviene intentar muchos mas
+% draws (como en el ejemplo de referencia, sr_draw = 500000).
+VARopt_nsr.sr_draw = 4000000;
+
+VAR_nsr = VARmodel(X, nlags, detc, VARopt_nsr);
+disp(['Tasa de aceptacion (signo + narrativa): ' num2str(100*VAR_nsr.accept_rate,'%.1f') '%'])
+
+
+%% 4.3 Bandas de identificacion a partir de IRall
+% -----------------------------------------------------------------------
+
+shock_to_plot = 2;
+
+% Extraer todos los draws aceptados para el shock seleccionado
+IRall_SR  = VAR_sr.IRall(:,:,shock_to_plot,:);
+IRall_NSR = VAR_nsr.IRall(:,:,shock_to_plot,:);
+
+
+% Limites de identificacion: minimo y maximo
+IRinf_SR  = min(IRall_SR,[],4);
+IRsup_SR  = max(IRall_SR,[],4);
+
+IRinf_NSR = min(IRall_NSR,[],4);
+IRsup_NSR = max(IRall_NSR,[],4);
+
+% Eliminar la cuarta dimension
+IRinf_SR  = squeeze(IRinf_SR);
+IRsup_SR  = squeeze(IRsup_SR);
+
+IRinf_NSR = squeeze(IRinf_NSR);
+IRsup_NSR = squeeze(IRsup_NSR);
+
+
+
+
+%% 5. GRAFICA: IRFs + BANDAS 68%, 84% y 95%
+% -----------------------------------------------------------------------
+
+shock_to_plot = 2;
+
+nsteps = VARopt.nsteps;
+x_axis = 0:nsteps-1;
+
+%% ========================================================================
+% EXTRAER IRFs ACEPTADAS
+% ========================================================================
+
+IRall_SR  = VAR_sr.IRall(:,:,shock_to_plot,:);
+IRall_NSR = VAR_nsr.IRall(:,:,shock_to_plot,:);
+
+% Medianas
+IRmed_SR  = median(IRall_SR,4);
+IRmed_NSR = median(IRall_NSR,4);
+
+% Fry-Pagan
+IRfp_SR  = VAR_sr.IRfp(:,:,shock_to_plot);
+IRfp_NSR = VAR_nsr.IRfp(:,:,shock_to_plot);
+
+%% ========================================================================
+% BANDAS DE PERCENTILES
+% ========================================================================
+
+% -------------------------
+% 68%  -> 16 - 84
+% -------------------------
+
+IR68_SR_inf  = prctile(IRall_SR,16,4);
+IR68_SR_sup  = prctile(IRall_SR,84,4);
+
+IR68_NSR_inf = prctile(IRall_NSR,16,4);
+IR68_NSR_sup = prctile(IRall_NSR,84,4);
+
+% -------------------------
+% 84%  -> 8 - 92
+% -------------------------
+
+IR84_SR_inf  = prctile(IRall_SR,8,4);
+IR84_SR_sup  = prctile(IRall_SR,92,4);
+
+IR84_NSR_inf = prctile(IRall_NSR,8,4);
+IR84_NSR_sup = prctile(IRall_NSR,92,4);
+
+% -------------------------
+% 95%  -> 2.5 - 97.5
+% -------------------------
+
+IR95_SR_inf  = prctile(IRall_SR,2.5,4);
+IR95_SR_sup  = prctile(IRall_SR,97.5,4);
+
+IR95_NSR_inf = prctile(IRall_NSR,2.5,4);
+IR95_NSR_sup = prctile(IRall_NSR,97.5,4);
+
+%% ========================================================================
+% ELIMINAR DIMENSION EXTRA
+% ========================================================================
+
+IRmed_SR  = squeeze(IRmed_SR);
+IRmed_NSR = squeeze(IRmed_NSR);
+
+IR68_SR_inf  = squeeze(IR68_SR_inf);
+IR68_SR_sup  = squeeze(IR68_SR_sup);
+IR68_NSR_inf = squeeze(IR68_NSR_inf);
+IR68_NSR_sup = squeeze(IR68_NSR_sup);
+
+IR84_SR_inf  = squeeze(IR84_SR_inf);
+IR84_SR_sup  = squeeze(IR84_SR_sup);
+IR84_NSR_inf = squeeze(IR84_NSR_inf);
+IR84_NSR_sup = squeeze(IR84_NSR_sup);
+
+IR95_SR_inf  = squeeze(IR95_SR_inf);
+IR95_SR_sup  = squeeze(IR95_SR_sup);
+IR95_NSR_inf = squeeze(IR95_NSR_inf);
+IR95_NSR_sup = squeeze(IR95_NSR_sup);
+
+%% ========================================================================
+% COLORES
+% ========================================================================
+
+blue   = pantone('Blue');
+tomato = pantone('Tomato');
+
+%% ========================================================================
+% GRAFICA
+% ========================================================================
+
+figure;
+FigSize(24,18)
+
+for ii = 1:nvar
+
+    subplot(ceil(nvar/2),2,ii)
+    hold on
+
+    %% --------------------------------------------------------------------
+    % COORDENADAS PARA LAS BANDAS
+    % ---------------------------------------------------------------------
+
+    Xfill = [x_axis fliplr(x_axis)];
+
+    %% ====================================================================
+    % SOLO SIGNO
+    % =====================================================================
+
+    % -------------------------
+    % 95%
+    % -------------------------
+
+    Y95_SR = [squeeze(IR95_SR_sup(:,ii))' ...
+              fliplr(squeeze(IR95_SR_inf(:,ii))')];
+
+    fill(Xfill,Y95_SR,blue, ...
+        'FaceAlpha',0.08, ...
+        'EdgeColor','none');
+
+    % -------------------------
+    % 84%
+    % -------------------------
+
+    Y84_SR = [squeeze(IR84_SR_sup(:,ii))' ...
+              fliplr(squeeze(IR84_SR_inf(:,ii))')];
+
+    fill(Xfill,Y84_SR,blue, ...
+        'FaceAlpha',0.12, ...
+        'EdgeColor','none');
+
+    % -------------------------
+    % 68%
+    % -------------------------
+
+    Y68_SR = [squeeze(IR68_SR_sup(:,ii))' ...
+              fliplr(squeeze(IR68_SR_inf(:,ii))')];
+
+    fill(Xfill,Y68_SR,blue, ...
+        'FaceAlpha',0.18, ...
+        'EdgeColor','none');
+
+
+    %% ====================================================================
+    % SIGNO + NARRATIVA
+    % =====================================================================
+
+    % -------------------------
+    % 95%
+    % -------------------------
+
+    Y95_NSR = [squeeze(IR95_NSR_sup(:,ii))' ...
+               fliplr(squeeze(IR95_NSR_inf(:,ii))')];
+
+    fill(Xfill,Y95_NSR,tomato, ...
+        'FaceAlpha',0.08, ...
+        'EdgeColor','none');
+
+    % -------------------------
+    % 84%
+    % -------------------------
+
+    Y84_NSR = [squeeze(IR84_NSR_sup(:,ii))' ...
+               fliplr(squeeze(IR84_NSR_inf(:,ii))')];
+
+    fill(Xfill,Y84_NSR,tomato, ...
+        'FaceAlpha',0.12, ...
+        'EdgeColor','none');
+
+    % -------------------------
+    % 68%
+    % -------------------------
+
+    Y68_NSR = [squeeze(IR68_NSR_sup(:,ii))' ...
+               fliplr(squeeze(IR68_NSR_inf(:,ii))')];
+
+    fill(Xfill,Y68_NSR,tomato, ...
+        'FaceAlpha',0.18, ...
+        'EdgeColor','none');
+
+
+    %% ====================================================================
+    % LIMITES DE LAS BANDAS
+    % =====================================================================
+
+    % Solo signo
+    plot(x_axis,squeeze(IR68_SR_inf(:,ii)), ...
+        '--','Color',blue,'LineWidth',0.6);
+
+    plot(x_axis,squeeze(IR68_SR_sup(:,ii)), ...
+        '--','Color',blue,'LineWidth',0.6);
+
+    % Signo + narrativa
+    plot(x_axis,squeeze(IR68_NSR_inf(:,ii)), ...
+        '-.','Color',tomato,'LineWidth',0.6);
+
+    plot(x_axis,squeeze(IR68_NSR_sup(:,ii)), ...
+        '-.','Color',tomato,'LineWidth',0.6);
+
+
+    %% ====================================================================
+    % MEDIANA
+    % =====================================================================
+
+    H1 = plot(x_axis,squeeze(IRmed_SR(:,ii)), ...
+        'LineStyle','-', ...
+        'Color',blue, ...
+        'LineWidth',2, ...
+        'Marker','o', ...
+        'MarkerSize',5, ...
+        'MarkerFaceColor',0.5*blue+0.5*[1 1 1], ...
+        'MarkerEdgeColor',blue);
+
+
+    H2 = plot(x_axis,squeeze(IRmed_NSR(:,ii)), ...
+        'LineStyle','-', ...
+        'Color',tomato, ...
+        'LineWidth',2, ...
+        'Marker','d', ...
+        'MarkerSize',5, ...
+        'MarkerFaceColor',0.5*tomato+0.5*[1 1 1], ...
+        'MarkerEdgeColor',tomato);
+
+
+    %% ====================================================================
+    % FRY-PAGAN
+    % =====================================================================
+
+    H3 = plot(x_axis,squeeze(IRfp_SR(:,ii)), ...
+        'LineStyle','--', ...
+        'Color',blue, ...
+        'LineWidth',1.5);
+
+    H4 = plot(x_axis,squeeze(IRfp_NSR(:,ii)), ...
+        'LineStyle','--', ...
+        'Color',tomato, ...
+        'LineWidth',1.5);
+
+
+    %% ====================================================================
+    % LINEA CERO
+    % =====================================================================
+
+    yline(0,'k--','LineWidth',0.5);
+
+
+    %% ====================================================================
+    % FORMATO
+    % =====================================================================
+
+    title(vnames{ii}, ...
+        'FontWeight','bold', ...
+        'FontSize',14);
+
+    set(gca,'FontSize',12,'Layer','bottom');
+
+    grid on
+
+    xlim([0 nsteps-1])
+
+    set(findobj(gca,'Type','line'),'Clipping','off');
+
+
+    %% ====================================================================
+    % LEYENDA
+    % =====================================================================
+
+    if ii == 1
+
+        legend([H1 H3 H2 H4], ...
+            {'Signo (mediana)', ...
+             'Signo (Fry-Pagan)', ...
+             'Signo + Narrativa (mediana)', ...
+             'Signo + Narrativa (Fry-Pagan)'}, ...
+            'Location','southoutside', ...
+            'Orientation','horizontal', ...
+            'NumColumns',2);
+
+    end
+
+    hold off
+
+end
