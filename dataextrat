@@ -1,0 +1,497 @@
+#Librerias generales
+import requests
+import pandas as pd
+import numpy as np
+import json
+import matplotlib.pyplot as plt
+
+
+def series_bdm(series,nombres_series, startdate, enddate=None, token=None):
+    if enddate is None:
+        enddate = pd.Timestamp.today().strftime("%Y-%m-%d")
+    if token is None:
+        token = "431240691f5175f4fa18b3de6ceac375aa4629c2bb931b4febebdd7e43f5b97a"
+    if isinstance(series, (list, tuple, set)):
+        series_param = ",".join(map(str, series))
+    else:
+        series_param = str(series).replace("/", ",")
+
+    url = f"https://www.banxico.org.mx/SieAPIRest/service/v1/series/{series_param}/datos/{startdate}/{enddate}"
+    headers = {"Bmx-Token": token}
+
+    r = requests.get(url, headers=headers, timeout=30)
+    r.raise_for_status()
+    data = r.json()
+
+    tablas = []
+    nombres = []
+
+    for s in data.get("bmx", {}).get("series", []):
+        sid = s.get("idSerie")
+        titulo = s.get("titulo", sid)
+        df = pd.DataFrame(s.get("datos", []))
+        if df.empty:
+            continue
+        colname = sid
+        df = df.rename(columns={"dato": colname})
+        df[colname] = (
+            df[colname]
+            .replace({"N/E": np.nan, "": np.nan})
+            .str.replace(",", "", regex=False)
+        )
+        df["fecha"] = pd.to_datetime(df["fecha"], format="%d/%m/%Y", errors="coerce")
+        df[colname] = pd.to_numeric(df[colname], errors="coerce")
+
+        tablas.append(df[["fecha", colname]])
+        nombres.append((sid, titulo))
+
+    if not tablas:
+        return pd.DataFrame(columns=["fecha"] + (list(series) if isinstance(series, (list, tuple, set)) else [series_param]))
+
+    out = tablas[0]
+    for t in tablas[1:]:
+        out = out.merge(t, on="fecha", how="outer")
+
+
+    out["fecha"] = pd.to_datetime(out["fecha"])
+    out = out.sort_values("fecha")
+    out.attrs["titulos"] = dict(nombres)
+    columnasdf = ["Fecha"] + nombres_series
+    out.columns = columnasdf
+    return out
+
+#####################################################
+#GDP
+####################################################
+
+
+# --------------------------------------------------
+# METADATA 736181
+# --------------------------------------------------
+# Variable : GDP
+# Frecuencia original : Trimestral
+# Frecuencia final    : Trimestral
+# Fuente              : INEGI
+# --------------------------------------------------
+
+# --------------------------------------------------
+# 1. DESCARGA INEGI
+# --------------------------------------------------
+TOKEN = "7f35f3dc-1d7b-b2f4-a9d8-cd984f504e89"
+url = f"https://www.inegi.org.mx/app/api/indicadores/desarrolladores/jsonxml/INDICATOR/736181/es/00/false/BIE-BISE/2.0/{TOKEN}?type=json"
+
+r = requests.get(url, timeout=30)
+r.raise_for_status()
+data = r.json()
+
+# --------------------------------------------------
+# 2. CONSTRUIR DATAFRAME
+# --------------------------------------------------
+df = pd.DataFrame()
+
+for i in range(len(data["Series"])):
+    obs = data["Series"][i]["OBSERVATIONS"]
+    df_temp = pd.DataFrame(obs).iloc[:, :2]
+    df_temp.columns = ["Fecha", f"Valor{i}"]
+    df_temp.set_index("Fecha", inplace=True)
+    df = pd.concat([df, df_temp], axis=1)
+
+# Convertir valores a numérico
+df = df.apply(pd.to_numeric, errors="coerce")
+
+# --------------------------------------------------
+# 3. LIMPIEZA DE FECHAS
+# --------------------------------------------------
+df.index = pd.to_datetime(df.index)
+df = df.sort_index()
+
+# --------------------------------------------------
+# 4. SELECCIONAR SERIE (CPI)
+# --------------------------------------------------
+Serie = df["Valor0"]
+
+# --------------------------------------------------
+# 5. FILTRAR DESDE 1999
+# --------------------------------------------------
+GDP = Serie.loc["1999-01-01":]
+
+# --------------------------------------------------
+# 8. DATAFRAME FINAL (EXPANDIBLE)
+# --------------------------------------------------
+
+GDP = GDP.to_frame(name="GDP")
+BaseDatosQ = GDP.copy()
+n = len(BaseDatosQ)
+fechas = pd.period_range(start="1999Q1", periods=n, freq="Q")
+BaseDatosQ["Fecha"] = fechas
+BaseDatosQ.set_index("Fecha", inplace=True)
+
+########################################################
+
+#CPI
+
+########################################################
+
+# --------------------------------------------------
+# METADATA 910392
+# --------------------------------------------------
+# Variable : CPI
+# Frecuencia original : Mensual
+# Frecuencia final    : Mensual
+# Fuente              : INEGI
+# --------------------------------------------------
+
+# --------------------------------------------------
+# 1. DESCARGA INEGI
+# --------------------------------------------------
+TOKEN = "7f35f3dc-1d7b-b2f4-a9d8-cd984f504e89"
+url = f"https://www.inegi.org.mx/app/api/indicadores/desarrolladores/jsonxml/INDICATOR/910392/es/00/false/BIE-BISE/2.0/{TOKEN}?type=json"
+
+r = requests.get(url, timeout=30)
+r.raise_for_status()
+data = r.json()
+
+# --------------------------------------------------
+# 2. CONSTRUIR DATAFRAME
+# --------------------------------------------------
+df = pd.DataFrame()
+
+for i in range(len(data["Series"])):
+    obs = data["Series"][i]["OBSERVATIONS"]
+    df_temp = pd.DataFrame(obs).iloc[:, :2]
+    df_temp.columns = ["Fecha", f"Valor{i}"]
+    df_temp.set_index("Fecha", inplace=True)
+    df = pd.concat([df, df_temp], axis=1)
+
+# Convertir valores a numérico
+df = df.apply(pd.to_numeric, errors="coerce")
+
+# --------------------------------------------------
+# 3. LIMPIEZA DE FECHAS
+# --------------------------------------------------
+df.index = pd.to_datetime(df.index)
+df = df.sort_index()
+
+# --------------------------------------------------
+# 4. SELECCIONAR SERIE (CPI)
+# --------------------------------------------------
+Serie = df["Valor0"]
+SerieFilt = Serie.loc["1999-01-01":]
+
+# --------------------------------------------------
+# 5. PASAR A FRECUENCIA TRIMESTRAL
+# --------------------------------------------------
+CPI = SerieFilt.resample("Q").mean()
+
+# --------------------------------------------------
+# 6. CONVERTIR ÍNDICE A PERIODOS TRIMESTRALES
+# --------------------------------------------------
+CPI.index = CPI.index.to_period("Q")
+
+# --------------------------------------------------
+# 7. DATAFRAME FINAL
+# --------------------------------------------------
+CPI = CPI.to_frame(name="CPI")
+BaseDatosQ = BaseDatosQ.join(CPI)
+
+
+#---------------------------------------------------
+# METADATA SF282
+# --------------------------------------------------
+# Variable : RS
+# Frecuencia original : Mensual
+# Frecuencia final    : Trimestral
+# Fuente              : BDEM
+# --------------------------------------------------
+
+# --------------------------------------------------
+# 1. DESCARGA BDEM
+# --------------------------------------------------
+TasaI = series_bdm("SF282",["RS"], "1999-01-01")
+TasaI["Fecha"] = pd.to_datetime(TasaI["Fecha"])
+TasaI = TasaI.set_index("Fecha")
+TasaI.sort_index()
+TasaI = TasaI.resample("Q").mean()
+TasaI.index = TasaI.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(TasaI)
+
+
+#---------------------------------------------------
+item = "SF17908"
+# --------------------------------------------------
+# Variable : S
+# Frecuencia original : Mensual
+# Frecuencia final    : Trimestral
+# Fuente              : BDEM
+# --------------------------------------------------
+
+# --------------------------------------------------
+# 1. DESCARGA BDEM
+# --------------------------------------------------
+
+TCN = series_bdm(item,["S"], "1999-01-01")
+TCN["Fecha"] = pd.to_datetime(TCN["Fecha"])
+TCN = TCN.set_index("Fecha")
+TCN.sort_index()
+TCN = TCN.resample("Q").mean()
+TCN.index = TCN.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(TCN)
+
+
+#---------------------------------------------------
+item = "SP74625"
+# --------------------------------------------------
+# Variable : CPI_CORE
+# Frecuencia original : Mensual
+# Frecuencia final    : Trimestral
+# Fuente              : BDEM
+# --------------------------------------------------
+
+# --------------------------------------------------
+# 1. DESCARGA BDEM
+# --------------------------------------------------
+
+CPIX = series_bdm(item,["CPIX"], "1999-01-01")
+CPIX["Fecha"] = pd.to_datetime(CPIX["Fecha"])
+CPIX = CPIX.set_index("Fecha")
+CPIX.sort_index()
+CPIX = CPIX.resample("Q").mean()
+CPIX.index = CPIX.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(CPIX)
+
+
+#---------------------------------------------------
+item = "SP74630"
+# --------------------------------------------------
+# Variable : CPI_NON_CORE
+# Frecuencia original : Mensual
+# Frecuencia final    : Trimestral
+# Fuente              : BDEM
+# --------------------------------------------------
+
+# --------------------------------------------------
+# 1. DESCARGA BDEM
+# --------------------------------------------------
+
+CPIN = series_bdm(item,["CPIN"], "1999-01-01")
+CPIN["Fecha"] = pd.to_datetime(CPIN["Fecha"])
+CPIN = CPIN.set_index("Fecha")
+CPIN.sort_index()
+CPIN = CPIN.resample("Q").mean()
+CPIN.index = CPIN.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(CPIN)
+
+
+########################33
+
+#Inflación EUA
+
+api_key = "c5201f5583c875dfc1e3954630c920b2"
+series_ids = ["CPIAUCSL"]
+nombres_series = {
+    "CPIAUCSL": "CPI_RW"
+}
+start_date = "1999-01-01"
+
+df = pd.DataFrame()
+
+for serie_id in series_ids:
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": serie_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "observation_start": start_date
+    }
+
+    r = requests.get(url, params=params)
+    data = r.json()
+
+    df_temp = pd.DataFrame(data["observations"])
+    df_temp["value"] = pd.to_numeric(df_temp["value"], errors="coerce")
+
+    df_temp = df_temp[["date", "value"]].rename(columns={"value": nombres_series[serie_id]})
+
+    if df.empty:
+        df = df_temp
+    else:
+        df = pd.merge(df, df_temp, on="date", how="outer")
+
+df["Fecha"] = pd.to_datetime(df["date"])
+df = df.set_index("Fecha")
+df.sort_index()
+df.drop(["date"],inplace=True,axis=1)
+df = df.resample("Q").mean()
+df.index = df.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(df)
+
+
+########################33
+
+#GDP EUA
+
+api_key = "c5201f5583c875dfc1e3954630c920b2"
+series_ids = ["GDPC1"]
+nombres_series = {
+    "GDPC1": "GDP_RW"
+}
+start_date = "1999-01-01"
+
+df = pd.DataFrame()
+
+for serie_id in series_ids:
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": serie_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "observation_start": start_date
+    }
+
+    r = requests.get(url, params=params)
+    data = r.json()
+
+    df_temp = pd.DataFrame(data["observations"])
+    df_temp["value"] = pd.to_numeric(df_temp["value"], errors="coerce")
+
+    df_temp = df_temp[["date", "value"]].rename(columns={"value": nombres_series[serie_id]})
+
+    if df.empty:
+        df = df_temp
+    else:
+        df = pd.merge(df, df_temp, on="date", how="outer")
+
+
+df["GDP_RW"] = df["GDP_RW"]*1000000
+df["Fecha"] = pd.to_datetime(df["date"])
+df = df.set_index("Fecha")
+df.sort_index()
+df.drop(["date"],inplace=True,axis=1)
+df = df.resample("Q").mean()
+df.index = df.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(df)
+
+
+########################33
+
+#RS EUA
+
+api_key = "c5201f5583c875dfc1e3954630c920b2"
+series_ids = ["DFF"]
+nombres_series = {
+    "DFF": "RS_RW"
+}
+start_date = "1999-01-01"
+
+df = pd.DataFrame()
+
+for serie_id in series_ids:
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": serie_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "observation_start": start_date
+    }
+
+    r = requests.get(url, params=params)
+    data = r.json()
+
+    df_temp = pd.DataFrame(data["observations"])
+    df_temp["value"] = pd.to_numeric(df_temp["value"], errors="coerce")
+
+    df_temp = df_temp[["date", "value"]].rename(columns={"value": nombres_series[serie_id]})
+
+    if df.empty:
+        df = df_temp
+    else:
+        df = pd.merge(df, df_temp, on="date", how="outer")
+
+df["Fecha"] = pd.to_datetime(df["date"])
+df = df.set_index("Fecha")
+df.sort_index()
+df.drop(["date"],inplace=True,axis=1)
+df = df.resample("Q").mean()
+df.index = df.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(df)
+BaseDatosQ["D4L_CPI_TAR"] = 3
+
+#Transform
+import math
+exceptions = ["RS","RS_RW","D4L_CPI_TAR"]
+varnames = list(BaseDatosQ.columns)
+for var_name in varnames:
+    enlista = (var_name in exceptions)
+    if enlista == False:
+        BaseDatosQ["L_"+var_name] = (100*np.log(BaseDatosQ[var_name]))
+
+BaseDatosQ["L_Z"] = BaseDatosQ["L_S"] + BaseDatosQ["L_CPI_RW"] - BaseDatosQ["L_CPI"]
+
+#---------------------------------------------------
+item = "SR14195"
+# --------------------------------------------------
+# Variable : Expectativa Inflación
+# Frecuencia original : Mensual
+# Frecuencia final    : Trimestral
+# Fuente              : BDEM
+# --------------------------------------------------
+
+# --------------------------------------------------
+# 1. DESCARGA BDEM
+# --------------------------------------------------
+
+EXPCPI = series_bdm(item,["EXP_D4L_CPI"], "1999-01-01")
+EXPCPI["Fecha"] = pd.to_datetime(EXPCPI["Fecha"])
+EXPCPI = EXPCPI.set_index("Fecha")
+EXPCPI.sort_index()
+EXPCPI = EXPCPI.resample("Q").mean()
+EXPCPI.index = EXPCPI.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(EXPCPI)
+
+########################
+
+#Expected Inflation EUA
+
+api_key = "c5201f5583c875dfc1e3954630c920b2"
+series_ids = ["EXPINF1YR"]
+nombres_series = {
+    "EXPINF1YR": "EXP_D4L_CPI_RW"
+}
+start_date = "1999-01-01"
+
+df = pd.DataFrame()
+
+for serie_id in series_ids:
+    url = "https://api.stlouisfed.org/fred/series/observations"
+    params = {
+        "series_id": serie_id,
+        "api_key": api_key,
+        "file_type": "json",
+        "observation_start": start_date
+    }
+
+    r = requests.get(url, params=params)
+    data = r.json()
+
+    df_temp = pd.DataFrame(data["observations"])
+    df_temp["value"] = pd.to_numeric(df_temp["value"], errors="coerce")
+
+    df_temp = df_temp[["date", "value"]].rename(columns={"value": nombres_series[serie_id]})
+
+    if df.empty:
+        df = df_temp
+    else:
+        df = pd.merge(df, df_temp, on="date", how="outer")
+
+df["Fecha"] = pd.to_datetime(df["date"])
+df = df.set_index("Fecha")
+df.sort_index()
+df.drop(["date"],inplace=True,axis=1)
+df = df.resample("Q").mean()
+df.index = df.index.to_period("Q")
+BaseDatosQ = BaseDatosQ.join(df)
+BaseDatosQ["RR"]=BaseDatosQ["RS"]-BaseDatosQ["EXP_D4L_CPI"]
+BaseDatosQ["RR_RW"]=BaseDatosQ["RS_RW"]-BaseDatosQ["EXP_D4L_CPI_RW"]
+#BaseDatosQ["Fecha"] = BaseDatosQ.index
+BaseDatosQ = BaseDatosQ[['GDP', 'CPI', 'RS', 'S', 'GDP_RW','CPI_RW', 'RS_RW', 'D4L_CPI_TAR','L_GDP', 'L_CPI', 'L_S', 'L_CPI_RW', 'L_GDP_RW', 'L_Z','EXP_D4L_CPI','EXP_D4L_CPI_RW','RR','RR_RW','CPIX','CPIN']]
+BaseDatosQ#.to_excel("BaseDatos.xlsx",index=False)
