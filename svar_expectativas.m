@@ -51,9 +51,9 @@ Ttab = readtable("C:\Users\K21168\Desktop\modelo_expectativas\SVAR\Datos\BaseDat
 dates_dt = datetime(Ttab.Fecha);   % fechas trimestrales
 igae     = Ttab.igae;
 inf      = Ttab.inf_g;               % inflación (subyacente)
-tasa     = Ttab.cetes;              % tasa de interés (equivalente a cetes28)
-exp      = Ttab.exp8_g;               % expectativas
-tcr      = Ttab.ln_tcr;               % tipo de cambio real (en logaritmos, L_TCR)
+tasa     = Ttab.tasa;              % tasa de interés (equivalente a cetes28)
+exp      = Ttab.exp12_g;               % expectativas
+tcr      = Ttab.diff_ln_tcn;               % tipo de cambio real (en logaritmos, L_TCR)
 mps      = Ttab.mps*-1;               % instrumento externo (monetary policy shock, sumado por trimestre)
 
 T = height(Ttab);
@@ -91,7 +91,7 @@ log_igae  = log(igae);
 
 actividad = igae_cycle;        % brecha en % (log-desviación * 100)
 act_label = 'Brecha del producto (igae, filtro HP, \lambda=14400)';
-
+%{
 % --- Tipo de cambio real: brecha del TCR ---
 % 'tcr' ya viene en logaritmos (L_TCR = L_S + L_CPI_RW - L_CPI, generado
 % previamente). Se aplica el MISMO filtro HP trimestral y se usa el
@@ -99,9 +99,9 @@ act_label = 'Brecha del producto (igae, filtro HP, \lambda=14400)';
 % mantener consistencia de orden de integración con el resto del sistema.
 [tcr_trend, tcr_cycle] = hpfilter(tcr, 'Smoothing', lambda_hp);
 % Sintaxis antigua: [tcr_trend, tcr_cycle] = hpfilter(log_tcr, lambda_hp);
-
 brecha_tcr = tcr_cycle;        % brecha en % (log-desviación * 100)
-tcr_label  = 'Brecha del TCR (filtro HP, \lambda=14400)';
+%}
+tcr_label  = 'TCR (filtro HP, \lambda=14400)';
 
 %% 1.1b) Gráfica de la descomposición HP (tendencia vs. ciclo)
 % ------------------------------------------------------------------------
@@ -117,12 +117,12 @@ plot(dates_dt, actividad, 'b', 'LineWidth', 1.2); yline(0,'k:');
 title(act_label, 'Interpreter','latex'); grid on;
 
 subplot(2,2,3);
-plot(dates_dt, tcr, 'k', dates_dt, tcr_trend, 'r--', 'LineWidth', 1.2);
+plot(dates_dt, tcr, 'k', dates_dt, tcr, 'r--', 'LineWidth', 1.2);
 title('L\_TCR: serie y tendencia HP', 'Interpreter','latex'); grid on;
 legend('L\_TCR','Tendencia','Location','best');
 
 subplot(2,2,4);
-plot(dates_dt, brecha_tcr, 'b', 'LineWidth', 1.2); yline(0,'k:');
+plot(dates_dt, tcr, 'b', 'LineWidth', 1.2); yline(0,'k:');
 title(tcr_label, 'Interpreter','latex'); grid on;
 
 sgtitle('Descomposici\''on HP ($\lambda=1600$): actividad y TCR', 'Interpreter','latex');
@@ -130,7 +130,7 @@ print(fig_hp, '-dpdf', 'graphics/descomposicion_hp_igae_tcr_trimestral.pdf');
 
 %% 1.2) Chequeo de estacionariedad (ADF + KPSS) de todas las series
 % ------------------------------------------------------------------------
-series_test = {actividad, inf, tasa, exp, brecha_tcr, mps};
+series_test = {actividad, inf, tasa, exp, tcr, mps};
 label_test  = {'Brecha del producto (IGAE)', 'Inflaci\''on (sub)', 'Tasa de inter\''es', ...
                'Exp. Inflaci\''on', 'Brecha del TCR', 'mps (instrumento)'};
 name_test   = {'actividad','sub','tasa','exp','brecha_tcr','mps'};
@@ -171,8 +171,8 @@ end
 
 %% 1.3) Ensamblar X completo
 % ------------------------------------------------------------------------
-X = [actividad, inf, tasa, exp, brecha_tcr];
-Xmnem   = {'brecha_igae','inf','tasa','exp','brecha_tcr'};
+X = [actividad, inf, tasa, exp, tcr];
+Xmnem   = {'brecha_igae','inf','tasa','exp','tcr'};
 Xvnames = {'Brecha del Producto','Inflacion (sub)','Tasa de interes','Exp. Inflacion','Brecha del TCR'};
 
 nvars = size(X,2);
@@ -187,21 +187,35 @@ disp('--- Selección de rezagos (criterios de información, muestra completa) --
 fprintf('Rezago óptimo según AIC: %d\n', lag_AIC);
 fprintf('Rezago óptimo según BIC: %d\n', lag_BIC);
 %}
-nlags = 2;               % <-- AJUSTA con base en el resultado de VARlag (4 trim. = 1 año es un punto de partida típico)
+nlags = 1;               % <-- AJUSTA con base en el resultado de VARlag (4 trim. = 1 año es un punto de partida típico)
 detc  = 1;               % 1 = constante
 
 
-%% 1.4) Dummy COVID: 2020-Q2 y 2020-Q3
+%% 1.4) Dummy Crisis Financiera Global + COVID
 % ------------------------------------------------------------------------
-% Impulse dummy (no step): vale 1 solo en esos dos trimestres, 0 en el resto.
-% Captura el choque atípico de esos dos trimestres sin dejar un "escalón"
-% permanente en el resto de la muestra.
-DUM_covid = zeros(T,1);
-DUM_covid(dates_dt == datetime(2009,1,1) | dates_dt == datetime(2020,4,1) | dates_dt == datetime(2020,5,1)) = 1;
+% Impulse dummy: vale 1 en dic-2008 a mar-2010 (GFC) y en mar-may 2020 (COVID),
+% 0 en el resto. Captura los choques atípicos de esos periodos sin dejar
+% un "escalón" permanente en el resto de la muestra.
 
-if sum(DUM_covid) ~= 2
-    warning(['La dummy COVID no encontró exactamente 2 trimestres (encontró %d). ' ...
-             'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_covid));
+% Rango 1: diciembre 2008 a marzo 2010 (16 meses)
+fechas_gfc1 = (datetime(2008,10,1) : calmonths(1) : datetime(2008,12,1))';
+fechas_gfc2 = (datetime(2009,4,1) : calmonths(1) : datetime(2009,5,1))';
+
+% Rango 2: marzo, abril y mayo 2020 (3 meses)
+fechas_covid = (datetime(2020,3,1) : calmonths(1) : datetime(2020,5,1))';
+
+fechas_post = (datetime(2021,3,1) : calmonths(1) : datetime(2023,1,1))';
+
+fechas_dummy = [fechas_gfc1; fechas_gfc2;];
+
+DUM_covid = zeros(T,1);
+DUM_covid(ismember(dates_dt, fechas_dummy)) = 1;
+
+n_esperado = numel(fechas_dummy); % 16 + 3 = 19
+if sum(DUM_covid) ~= n_esperado
+    warning(['La dummy no encontró exactamente %d meses (encontró %d). ' ...
+        'Revisa que las fechas en dates_dt correspondan al primer día de cada mes.'], ...
+        n_esperado, sum(DUM_covid));
 end
 
 %% 3) Definición de las ventanas de muestra
@@ -212,9 +226,9 @@ fecha_max_datos = dates_dt(T);
 %% 3) Definición de las ventanas de muestra
 % ------------------------------------------------------------------------
 n_ventanas = 1;
-ventana_ini = datetime(2016,1,1);
-ventana_fin = datetime(2026,6,30);   % <-- corregido: fin de año, no 1-ene
-ventana_lbl = {'2016-2022'};                       % <-- corregido: coincide con fechas reales
+ventana_ini = datetime(2008,1,1);
+ventana_fin = datetime(2016,6,30);   % <-- corregido: fin de año, no 1-ene
+ventana_lbl = {'2008-2016'};                       % <-- corregido: coincide con fechas reales
 idx = cell(n_ventanas,1);
 for k = 1:n_ventanas
     if ventana_ini(k) < fecha_min_datos || ventana_fin(k) > fecha_max_datos
@@ -266,7 +280,7 @@ VARopt.impact    = 0;
 VARopt.pctg      = 68;
 VARopt.method    = 'wild';
 VARopt.inference = 1;
-VARopt.ndraws    = 1000;
+VARopt.ndraws    = 500;
 VARopt.sr_draw = 10000000;
 VARopt.sr_hor    = 12;
 set(0,'DefaultFigureWindowStyle','normal');
