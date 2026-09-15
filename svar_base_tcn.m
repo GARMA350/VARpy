@@ -46,7 +46,7 @@ inf      = Ttab.inf_g;               % inflación (subyacente)
 tasa     = Ttab.tasa;              % tasa de interés (equivalente a cetes28)
 exp      = Ttab.exp4_g;               % expectativas
 diff_ln_tcn  = Ttab.diff_ln_tcn;               % tipo de cambio real (en logaritmos, L_TCR)
-mps      = Ttab.mps*-1;               % instrumento externo (monetary policy shock, sumado por trimestre)
+mps      = Ttab.mps;               % instrumento externo (monetary policy shock, sumado por trimestre)
 
 T = height(Ttab);
 
@@ -110,8 +110,8 @@ print(fig_hp, '-dpdf', 'graphics/descomposicion_hp_igae_tcr_trimestral.pdf');
 %% 1.2) Chequeo de estacionariedad (ADF + KPSS) de todas las series
 % ------------------------------------------------------------------------
 series_test = {actividad, inf, tasa, exp, diff_ln_tcn, mps};
-label_test  = {'Brecha del producto (IGAE)', 'Inflaci\''on (sub)', 'Tasa de inter\''es', ...
-               'Exp. Inflaci\''on', 'Brecha del TCR', 'mps (instrumento)'};
+label_test  = {'Brecha del producto (IGAE)', 'Inflaci\''on', 'Tasa de inter\''es', ...
+               'Exp. Inflaci\''on', 'tcn(diff_log)', 'mps (instrumento)'};
 name_test   = {'actividad','sub','tasa','exp','brecha_tcr','mps'};
 
 nseries = numel(series_test);
@@ -152,7 +152,7 @@ end
 % ------------------------------------------------------------------------
 X = [actividad, inf, tasa, exp, diff_ln_tcn];
 Xmnem   = {'brecha_igae','inf','tasa','exp','diff_ln_tcn'};
-Xvnames = {'Brecha del Producto','Inflacion (sub)','Tasa de interes','Exp. Inflacion','Brecha del TCR'};
+Xvnames = {'Brecha del Producto','Inflacion','Tasa de interes','Exp. Inflacion','tcn(diff_log)'};
 
 nvars = size(X,2);
 
@@ -170,69 +170,72 @@ nlags = 2;               % <-- AJUSTA con base en el resultado de VARlag (4 trim
 detc  = 1;               % 1 = constante
 
 
-%% 1.4) Dummy COVID: 2020-Q2 y 2020-Q3
+%% 1.4) Dummies de periodos atípicos: pandemia, jul2006-sep2008, oct2011-sep2012, 2017
 % ------------------------------------------------------------------------
-% Impulse dummy (no step): vale 1 solo en esos dos trimestres, 0 en el resto.
-% Captura el choque atípico de esos dos trimestres sin dejar un "escalón"
-% permanente en el resto de la muestra.
+% DUM_covid: impulse dummy, vale 1 solo en 2020-Q2 y 2020-Q3 (sin dejar
+% "escalón" permanente en el resto de la muestra).
 DUM_covid = zeros(T,1);
-DUM_covid(dates_dt == datetime(2009,1,1) | dates_dt == datetime(2016,11,1) | dates_dt == datetime(2020,4,1) | dates_dt == datetime(2020,5,1)) = 1;
-
+DUM_covid(isbetween(dates_dt, datetime(2020,4,1), datetime(2020,5,1))) = 1;
 if sum(DUM_covid) ~= 2
     warning(['La dummy COVID no encontró exactamente 2 trimestres (encontró %d). ' ...
-             'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_covid));
+        'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_covid));
 end
 
-%% 3) Definición de las ventanas de muestra (ROLLING, 10 años)
-% ------------------------------------------------------------------------
+% DUM_2006_2008: step dummy, vale 1 desde 2006-Q3 (jul) hasta 2008-Q3 (sep), 0 en el resto.
+DUM_2008_2009 = zeros(T,1);
+DUM_2008_2009(isbetween(dates_dt, datetime(2008,10,1), datetime(2009,4,1))) = 1;
+if sum(DUM_2008_2009) ~= 9
+    warning(['La dummy 2006-2008 no encontró exactamente 9 trimestres (encontró %d). ' ...
+        'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_2008_2009));
+end
+
+% DUM_2011_2012: step dummy, vale 1 desde 2011-Q4 (oct) hasta 2012-Q3 (sep), 0 en el resto.
+DUM_2011_2012 = zeros(T,1);
+DUM_2011_2012(isbetween(dates_dt, datetime(2011,10,1), datetime(2012,7,1))) = 1;
+if sum(DUM_2011_2012) ~= 4
+    warning(['La dummy 2011-2012 no encontró exactamente 4 trimestres (encontró %d). ' ...
+        'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_2011_2012));
+end
+
+% DUM_2017_2017: step dummy, vale 1 durante 2017 (ene-dic), 0 en el resto.
+DUM_2017_2017 = zeros(T,1);
+DUM_2017_2017(isbetween(dates_dt, datetime(2017,1,1), datetime(2017,12,1))) = 1;
+if sum(DUM_2017_2017) ~= 4
+    warning(['La dummy 2017 no encontró exactamente 4 trimestres (encontró %d). ' ...
+        'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_2017_2017));
+end
+
+% Matriz combinada con las 4 dummies (T x 4), usada en las secciones 6 y 9.
+% Orden de columnas: [2006-2008, 2011-2012, 2017, COVID]
+DUM_all = [DUM_2008_2009, DUM_covid];
+nombres_dum = {'2008-2009','COVID'};   % <-- mismo orden que DUM_all, usado en 6 y 9
+
 fecha_min_datos = dates_dt(1);
 fecha_max_datos = dates_dt(T);
 
-% --- Parámetros de la ventana móvil --------------------------------------
-ventana_anios = 10;                    % ancho de cada ventana (años)
-paso_anios    = 4;                     % desplazamiento entre ventanas (años)
-ventana_ini0  = datetime(2008,1,1);    % inicio de la primera ventana
-
-% Genera ventanas [ini_k, fin_k] de `ventana_anios` años, empezando en
-% ventana_ini0 y desplazándose `paso_anios` años a la vez, mientras el fin
-% de la ventana no exceda la última fecha disponible en los datos.
-ventana_ini = datetime.empty(0,1);
-ventana_fin = datetime.empty(0,1);
-ini_k = ventana_ini0;
-while true
-    fin_k = ini_k + calyears(ventana_anios) - caldays(1);
-    if fin_k > fecha_max_datos
-        break
-    end
-    ventana_ini(end+1,1) = ini_k;   %#ok<SAGROW>
-    ventana_fin(end+1,1) = fin_k;   %#ok<SAGROW>
-    ini_k = ini_k + calyears(paso_anios);
-end
-n_ventanas = numel(ventana_ini);
-
-if n_ventanas == 0
-    error(['No se pudo formar ni una ventana de %d años a partir de %s: ' ...
-           'los datos terminan en %s.'], ventana_anios, ...
-           datestr(ventana_ini0,'yyyy-mm'), datestr(fecha_max_datos,'yyyy-mm'));
-end
-
-ventana_lbl = cell(n_ventanas,1);
-for k = 1:n_ventanas
-    ventana_lbl{k} = sprintf('%d-%d', year(ventana_ini(k)), year(ventana_fin(k)));
-end
-
+%% 3) Definición de las ventanas de muestra
+% ------------------------------------------------------------------------
+n_ventanas = 1;
+ventana_ini = datetime(2016,1,1);
+ventana_fin = datetime(2026,12,30);   % <-- corregido: fin de año, no 1-ene
+ventana_lbl = {'2016-2026'};                       % <-- corregido: coincide con fechas reales
 idx = cell(n_ventanas,1);
 for k = 1:n_ventanas
+    if ventana_ini(k) < fecha_min_datos || ventana_fin(k) > fecha_max_datos
+        warning(['Ventana %s excede el rango disponible en los datos (%s a %s). ' ...
+                 'Se recortará automáticamente a lo disponible.'], ...
+                 ventana_lbl{k}, datestr(fecha_min_datos, 'yyyy-mm'), datestr(fecha_max_datos, 'yyyy-mm'));
+    end
     idx{k} = find(dates_dt >= ventana_ini(k) & dates_dt <= ventana_fin(k));
     if isempty(idx{k})
         error('Ventana %s no tiene observaciones dentro del rango de datos disponible.', ventana_lbl{k});
     end
 end
 
-fprintf('\n--- Ventanas móviles de %d años (paso %d año(s)), trimestral ---\n', ventana_anios, paso_anios);
+fprintf('\n--- Ventanas de muestra (trimestral) ---\n');
 for k = 1:n_ventanas
-    fprintf('Ventana %d/%d (%s): %s a %s, n = %d trimestres\n', ...
-        k, n_ventanas, ventana_lbl{k}, datestr(dates_dt(idx{k}(1)), 'yyyy-mm'), ...
+    fprintf('Ventana %d (solicitada %s): %s a %s, n = %d trimestres\n', ...
+        k, ventana_lbl{k}, datestr(dates_dt(idx{k}(1)), 'yyyy-mm'), ...
         datestr(dates_dt(idx{k}(end)), 'yyyy-mm'), length(idx{k}));
 end
 
@@ -261,7 +264,7 @@ end
 VARopt = VARoption;
 VARopt.vnames    = Xvnames;
 VARopt.mnem      = Xmnem;
-VARopt.nsteps    = 60;         % horizonte de los IRF: 20 TRIMESTRES (~5 años)
+VARopt.nsteps    = 36;         % horizonte de los IRF: 20 TRIMESTRES (~5 años)
 VARopt.frequency = 'm';        % trimestral
 VARopt.impact    = 0;
 VARopt.pctg      = 68;
@@ -269,7 +272,7 @@ VARopt.method    = 'wild';
 VARopt.inference = 1;
 VARopt.ndraws    = 1000;
 VARopt.sr_draw = 10000000;
-VARopt.sr_hor    = 12;
+VARopt.sr_hor    = 4;
 set(0,'DefaultFigureWindowStyle','normal');
 VARopt.quality   = 0;
 
@@ -277,7 +280,7 @@ VARopt.quality   = 0;
 % ------------------------------------------------------------------------
 %              Demanda  Oferta  Expectativas  TipoCambio
 R = [            1,       -1,        0,            0   ;    % brecha_igae (actividad)
-                 1,        1,        0,            0   ;    % sub (inflación)
+                 1,        1,        0,            0  ;    % sub (inflación)
                  1,        0,        0,            0   ;    % tasa (sin restricción)
                  0,        0,        0,            0   ;    % exp
                  0,        0,        0,            1  ];    % brecha_tcr
@@ -304,7 +307,16 @@ for k = 1:n_ventanas
     fprintf('\n--- Estimando ventana %d/%d (%s) ---\n', k, n_ventanas, ventana_lbl{k});
     Xk    = X(idx{k}, :);
     mpsk  = mps(idx{k});
-    DUMk  = DUM_covid(idx{k});          % <-- recorte de la dummy para esta ventana
+
+    DUMk_full    = DUM_all(idx{k}, :);
+    cols_activas = any(DUMk_full ~= 0, 1);   % <-- solo dummies con varianza en esta ventana
+    DUMk         = DUMk_full(:, cols_activas);
+
+    if any(~cols_activas)
+        fprintf('Ventana %d (%s): se excluyen dummies sin observaciones en esta ventana: %s\n', ...
+            k, ventana_lbl{k}, strjoin(nombres_dum(~cols_activas), ', '));
+    end
+
     VARopt.IV      = mpsk;
     VARopt.figname = sprintf('graphics/svar_sign_iv_trimestral_%s', strrep(ventana_lbl{k}, '-', '_'));
     VAR_sub{k} = VARmodel(Xk, nlags, detc, VARopt, DUMk, 0); 
@@ -347,6 +359,7 @@ estable_all = maxEig_all < 1;
 StabilitySummary = table(ventana_lbl(:), maxEig_all, estable_all, Fstat_all, ...
     'VariableNames', {'Ventana','MaxEigenvalue','Estable','F_stat_1a_etapa'});
 disp(StabilitySummary);
+
 %% 7) IRFs individuales de cada ventana (choque 1 = política monetaria)
 % ------------------------------------------------------------------------
 VARopt.pick = 1;
@@ -436,7 +449,10 @@ for k = ventanas_a_graficar
     fprintf('\n--- Recalculando bandas 68%% y 90%% para ventana %d (%s) ---\n', k, ventana_lbl{k});
     Xk   = X(idx{k}, :);
     mpsk = mps(idx{k});
-    DUMk = DUM_covid(idx{k});
+
+    DUMk_full    = DUM_all(idx{k}, :);
+    cols_activas = any(DUMk_full ~= 0, 1);   % <-- mismas columnas activas que en la sección 6
+    DUMk         = DUMk_full(:, cols_activas);
 
     VARopt_68.IV = mpsk;
     VARopt_90.IV = mpsk;
