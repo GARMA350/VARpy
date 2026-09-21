@@ -42,23 +42,24 @@ Ttab = readtable("C:\Users\K21168\Desktop\modelo_expectativas\SVAR\Datos\BaseDat
 
 dates_dt = datetime(Ttab.Fecha);   % fechas trimestrales
 igae     = Ttab.igae;
-inf      = Ttab.inf_s;               % inflación (subyacente)
+inf      = Ttab.inf_g;               % inflación (subyacente)
 tasa     = Ttab.tasa;             % tasa de interés (equivalente a cetes28)
-exp12   = Ttab.exp12_s;            % expectativas
-exp4    = Ttab.exp4_s;
+exp12    = Ttab.exp12_g;            % expectativas
+exp4    = Ttab.exp4_g;
+exp8    = Ttab.exp8_g;
 tcr      = Ttab.ln_tcr;                  % tipo de cambio real (en logaritmos, L_TCR)
-mps      = Ttab.mps;               % instrumento externo (monetary policy shock, sumado por trimestre)
+mps      = Ttab.mps3;               % instrumento externo (monetary policy shock, sumado por trimestre)
 
 T = height(Ttab);
 
-mnem = {'igae','inf','tasa','exp12','exp4','diff_ln_tcn','mps'};
+mnem = {'igae','inf','tasa','exp12','exp4','exp8','diff_ln_tcn','mps'};
 
 %% 1.0) Gráfica exploratoria de las series originales
 % ------------------------------------------------------------------------
 fig_raw = figure('Name','Series originales (trimestral)');
 vars_raw  = {igae, inf, tasa, exp12, exp4, tcr, mps};
 names_raw = {'IGAE (nivel)','Inflacion','Tasa de interes', ...
-             'Exp. Inflacion12m','Exp. Inflacion4a','diff_ln_tcn','mps (instrumento)'};
+             'Exp. Inflacion12m','Exp. Inflacion4a','Exp. Inflacion8a','diff_ln_tcn','mps (instrumento)'};
 n_raw = numel(vars_raw);
 
 for i = 1:n_raw
@@ -120,10 +121,10 @@ print(fig_hp, '-dpdf', 'graphics/descomposicion_hp_igae_tcr_trimestral.pdf');
 
 %% 1.2) Chequeo de estacionariedad (ADF + KPSS) de todas las series
 % ------------------------------------------------------------------------
-series_test = {actividad, inf, tasa, exp12, exp4, brecha_tcr, mps};
+series_test = {actividad, inf, tasa, exp12, exp4, exp8, brecha_tcr, mps};
 label_test  = {'Brecha del producto (IGAE)', 'Inflaci\''on', 'Tasa de inter\''es', ...
-               'Exp. Inflaci\''on 12m', 'Exp. Inflaci\''on 4a', 'tcn(diff_log)', 'mps (instrumento)'};
-name_test   = {'actividad','sub','tasa','exp12','exp4','tcn','mps'};
+               'Exp. Inflaci\''on 12m', 'Exp. Inflaci\''on 4a','Exp. Inflaci\''on 8a', 'tcn(diff_log)', 'mps (instrumento)'};
+name_test   = {'actividad','sub','tasa','exp12','exp4','exp8','tcn','mps'};
 
 nseries = numel(series_test);
 ADF_h  = nan(nseries,1); ADF_p  = nan(nseries,1);
@@ -161,9 +162,9 @@ end
 
 %% 1.3) Ensamblar X completo
 % ------------------------------------------------------------------------
-X = [actividad, inf, tasa, exp12, exp4, brecha_tcr];
-Xmnem   = {'brecha_igae','inf','tasa','exp12','exp4','brecha_tcr'};
-Xvnames = {'Brecha del Producto','Inflacion','Tasa de interes','Exp. Inflacion 12m','Exp. Inflacion 4a','brecha_tcr'};
+X = [actividad, inf, tasa, exp12, exp4, exp8, brecha_tcr];
+Xmnem   = {'brecha_igae','inf','tasa','exp12','exp4','exp8','brecha_tcr'};
+Xvnames = {'Brecha del Producto','Inflacion','Tasa de interes','Exp. Inflacion 12m','Exp. Inflacion 4a','Exp. Inflacion 8a','brecha_tcr'};
 
 nvars = size(X,2);
 
@@ -190,11 +191,12 @@ if sum(DUM_2004_2004) ~= 9
     warning(['La dummy 2004-2004 no encontró exactamente 9 trimestres (encontró %d). ' ...
         'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_2004_2004));
 end
+
 % ------------------------------------------------------------------------
 % DUM_covid: impulse dummy, vale 1 solo en 2020-Q2 y 2020-Q3 (sin dejar
 % "escalón" permanente en el resto de la muestra).
 DUM_covid = zeros(T,1);
-DUM_covid(isbetween(dates_dt, datetime(2020,4,1), datetime(2020,5,1))) = 1;
+DUM_covid(isbetween(dates_dt, datetime(2020,3,1), datetime(2020,5,1))) = 1;
 if sum(DUM_covid) ~= 2
     warning(['La dummy COVID no encontró exactamente 2 trimestres (encontró %d). ' ...
         'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_covid));
@@ -208,6 +210,16 @@ if sum(DUM_2008_2009) ~= 9
         'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_2008_2009));
 end
 
+
+% DUM_2011_2012: step dummy, vale 1 desde 2011-Q4 (oct) hasta 2012-Q3 (sep), 0 en el resto.
+DUM_2011_2011 = zeros(T,1);
+DUM_2011_2011(isbetween(dates_dt, datetime(2011,9,1), datetime(2011,9,1))) = 1;
+if sum(DUM_2011_2011) ~= 4
+    warning(['La dummy 2011-2012 no encontró exactamente 4 trimestres (encontró %d). ' ...
+        'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_2011_2011));
+end
+
+
 % DUM_2011_2012: step dummy, vale 1 desde 2011-Q4 (oct) hasta 2012-Q3 (sep), 0 en el resto.
 DUM_2011_2012 = zeros(T,1);
 DUM_2011_2012(isbetween(dates_dt, datetime(2012,6,1), datetime(2012,9,1))) = 1;
@@ -218,16 +230,24 @@ end
 
 % DUM_2017_2017: step dummy, vale 1 durante 2017 (ene-dic), 0 en el resto.
 DUM_2017_2017 = zeros(T,1);
-DUM_2017_2017(isbetween(dates_dt, datetime(2017,1,1), datetime(2017,12,1))) = 1;
+DUM_2017_2017(isbetween(dates_dt, datetime(2017,1,1), datetime(2017,1,1))) = 1;
 if sum(DUM_2017_2017) ~= 4
     warning(['La dummy 2017 no encontró exactamente 4 trimestres (encontró %d). ' ...
         'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_2017_2017));
 end
 
+% DUM_2017_2017: step dummy, vale 1 durante 2017 (ene-dic), 0 en el resto.
+DUM_2024_2024 = zeros(T,1);
+DUM_2024_2024(isbetween(dates_dt, datetime(2024,8,1), datetime(2024,9,1))) = 1;
+if sum(DUM_2024_2024) ~= 4
+    warning(['La dummy 2017 no encontró exactamente 4 trimestres (encontró %d). ' ...
+        'Revisa que las fechas en dates_dt correspondan al primer día de cada trimestre.'], sum(DUM_2024_2024));
+end
+
 % Matriz combinada con las 4 dummies (T x 4), usada en las secciones 6 y 9.
 % Orden de columnas: [2006-2008, 2011-2012, 2017, COVID]
-DUM_all = [DUM_2008_2009, DUM_2017_2017, DUM_covid];
-nombres_dum = {'2008-2009','2017','COVID'};   % <-- mismo orden que DUM_all
+DUM_all = [DUM_2008_2009, DUM_2011_2011, DUM_2011_2012, DUM_2017_2017, DUM_covid];
+nombres_dum = {'2008-2009','2011','2012','2017','COVID'};   % <-- mismo orden que DUM_all
 
 fecha_min_datos = dates_dt(1);
 fecha_max_datos = dates_dt(T);
@@ -235,9 +255,9 @@ fecha_max_datos = dates_dt(T);
 %% 3) Definición de las ventanas de muestra
 % ------------------------------------------------------------------------
 n_ventanas = 1;
-ventana_ini = datetime(2016,1,1);
+ventana_ini = datetime(2009,4,1); %2009-04
 ventana_fin = datetime(2026,12,30);   % <-- corregido: fin de año, no 1-ene
-ventana_lbl = {'2004-2026'};                       % <-- corregido: coincide con fechas reales
+ventana_lbl = {'2009-2026'};                       % <-- corregido: coincide con fechas reales
 idx = cell(n_ventanas,1);
 for k = 1:n_ventanas
     if ventana_ini(k) < fecha_min_datos || ventana_fin(k) > fecha_max_datos
@@ -283,7 +303,7 @@ end
 VARopt = VARoption;
 VARopt.vnames    = Xvnames;
 VARopt.mnem      = Xmnem;
-VARopt.nsteps    = 36;         % horizonte de los IRF: 20 TRIMESTRES (~5 años)
+VARopt.nsteps    = 40;         % horizonte de los IRF: 20 TRIMESTRES (~5 años)
 VARopt.frequency = 'm';        % trimestral
 VARopt.impact    = 0;
 VARopt.pctg      = 68;
@@ -295,13 +315,14 @@ VARopt.sr_hor    = 4;
 set(0,'DefaultFigureWindowStyle','normal');
 VARopt.quality   = 0;
 
-%     Dm Of E12 E4 Tc  
-R = [ 1, -1, 0, 0, 0;    % brecha_igae
-      1,  1, 0, 0, 0;    % inf
-      1,  0, 0, 0, 0;    % tasa
-      0,  0, 0, 0, 0;    % exp12
-      0,  0, 0, 0, 0;    % exp4
-      0,  0, 0, 0, 1 ];  % diff_ln_tcn
+%     Dm Of E12 E4 E8 Tc  
+R = [ 1, -1, 0, 0, 0, 0;    % brecha_igae
+      1,  1, 0, 0, 0, 0;    % inf
+      1,  0, 0, 0, 0, 0;    % tasa
+      0,  0, 0, 0, 0, 0;    % exp12
+      0,  0, 0, 0, 0, 0;    % exp4
+      0,  0, 0, 0, 0, 0;    % exp
+      0,  0, 0, 0, 0, 1 ];  % diff_ln_tcn
 
 
 %% 5) Restricciones de signo para los 4 choques NO identificados por IV
@@ -313,7 +334,7 @@ R = [ 1, -1, 0, 0, 0;    % brecha_igae
 %                 0,        0,        0,            0   ;    % exp
 %                -1,       -1,        0,            1  ];    % brecha_tcr
 
-VARopt.snames = {'Pol\''itica Monetaria','Demanda','Oferta','Exp12','Exp4','Tipo de Cambio'};
+VARopt.snames = {'Pol\''itica Monetaria','Demanda','Oferta','Exp12','Exp4','Exp8','Tipo de Cambio'};
 VARopt.ident = 'sign+iv';
 VARopt.R     = R;
 
